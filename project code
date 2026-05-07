@@ -1,0 +1,862 @@
+org 100h
+
+newline MACRO
+    PUSH AX
+    PUSH DX
+    MOV DL, 0Dh
+    MOV AH, 2
+    INT 21h
+    MOV DL, 0Ah
+    MOV AH, 2
+    INT 21h
+    POP DX
+    POP AX
+ENDM
+
+printStr MACRO strLabel
+    PUSH AX
+    PUSH DX
+    LEA DX, strLabel
+    MOV AH, 9
+    INT 21h
+    POP DX
+    POP AX
+ENDM
+
+.MODEL SMALL
+.STACK 200h
+
+.DATA
+
+patID      DB 5 dup(0)
+patAge     DB 5 dup(0)
+patGend    DB 5 dup('?')
+patCount   DB 0
+
+patName    DB 50 dup(' ')
+patDisease DB 50 dup(' ')
+
+emergStack DB 5 dup(0)
+emgTop     DB 0
+
+searchKey  DB 0
+
+msgMenu   DB 0Dh,0Ah
+          DB "============================================",0Dh,0Ah
+          DB "   HOSPITAL PATIENT MANAGEMENT SYSTEM      ",0Dh,0Ah
+          DB "============================================",0Dh,0Ah
+          DB " 1. Add New Patient                        ",0Dh,0Ah
+          DB " 2. View All Patients                      ",0Dh,0Ah
+          DB " 3. Search Patient by ID                   ",0Dh,0Ah
+          DB " 4. Update Patient Details                 ",0Dh,0Ah
+          DB " 5. Delete Patient Record                  ",0Dh,0Ah
+          DB " 6. Emergency Stack  (Push / Pop)          ",0Dh,0Ah
+          DB " 0. Exit                                   ",0Dh,0Ah
+          DB "============================================",0Dh,0Ah
+          DB "Enter choice: $"
+
+msgEmgMenu DB 0Dh,0Ah
+           DB " 1. PUSH - Add Emergency Patient           ",0Dh,0Ah
+           DB " 2. POP  - Treat Emergency Patient         ",0Dh,0Ah
+           DB " 3. Back to Main Menu                      ",0Dh,0Ah
+           DB "Enter: $"
+
+msgAddID      DB 0Dh,0Ah,"Enter Patient ID (digit 1-9): $"
+msgIDTaken    DB 0Dh,0Ah,"ID already taken. Try another ID.$"
+msgAddName    DB 0Dh,0Ah,"Enter Name (up to 9 chars): $"
+msgAddDisease DB 0Dh,0Ah,"Enter Disease (up to 9 chars): $"
+msgAddAge     DB 0Dh,0Ah,"Enter Age (single digit 0-9): $"
+msgAddGend    DB 0Dh,0Ah,"Enter Gender (M/F): $"
+
+msgAdded      DB 0Dh,0Ah,"Patient added successfully.$"
+msgFull       DB 0Dh,0Ah,"List full - cannot add more patients.$"
+
+msgSep        DB 0Dh,0Ah,"------------------------------------------$"
+msgIDLabel    DB 0Dh,0Ah,"  ID       : $"
+msgAgeLabel   DB 0Dh,0Ah,"  Age      : $"
+msgNameLabel  DB 0Dh,0Ah,"  Name     : $"
+msgDiseaseLbl DB 0Dh,0Ah,"  Disease  : $"
+msgGendLabel  DB 0Dh,0Ah,"  Gender   : $"
+
+msgNoRec      DB 0Dh,0Ah,"No patients on record.$"
+msgNotFound   DB 0Dh,0Ah,"Patient not found.$"
+msgSearchID   DB 0Dh,0Ah,"Enter Patient ID to search: $"
+
+msgUpdID      DB 0Dh,0Ah,"Enter Patient ID to update: $"
+msgUpdAge     DB 0Dh,0Ah,"Enter new Age: $"
+msgUpdDisease DB 0Dh,0Ah,"Enter new Disease: $"
+msgUpdDone    DB 0Dh,0Ah,"Patient details updated.$"
+
+msgDelID      DB 0Dh,0Ah,"Enter Patient ID to delete: $"
+msgDeleted    DB 0Dh,0Ah,"Patient record deleted.$"
+
+msgEmgID      DB 0Dh,0Ah,"Enter Emergency Patient ID: $"
+msgEmgPushed  DB " pushed to emergency queue.$"
+msgTreating   DB 0Dh,0Ah,"Now treating emergency patient ID: $"
+msgEmgFull    DB 0Dh,0Ah,"Emergency queue full.$"
+msgEmgEmpty   DB 0Dh,0Ah,"No emergency patients.$"
+
+msgBye        DB 0Dh,0Ah,"System closed. Goodbye.$"
+msgInvalid    DB 0Dh,0Ah,"Invalid input. Try again.$"
+
+.CODE
+
+MAIN PROC FAR
+    MOV AX, @DATA
+    MOV DS, AX
+
+mnuLoop:
+    printStr msgMenu
+
+    MOV AH,1
+    INT 21h
+    MOV BL,AL
+    newline
+
+    CMP BL,'0'
+    JE mnuExit
+
+    CMP BL,'1'
+    JE mnuAdd
+
+    CMP BL,'2'
+    JE mnuView
+
+    CMP BL,'3'
+    JE mnuSearch
+
+    CMP BL,'4'
+    JE mnuUpdate
+
+    CMP BL,'5'
+    JE mnuDelete
+
+    CMP BL,'6'
+    JE mnuEmergency
+
+    printStr msgInvalid
+    JMP mnuLoop
+
+mnuAdd:
+    CALL addPatient
+    JMP mnuLoop
+
+mnuView:
+    CALL viewAllPatients
+    JMP mnuLoop
+
+mnuSearch:
+    CALL searchPatient
+    JMP mnuLoop
+
+mnuUpdate:
+    CALL updatePatient
+    JMP mnuLoop
+
+mnuDelete:
+    CALL deletePatient
+    JMP mnuLoop
+
+mnuEmergency:
+    CALL emergencyMenu
+    JMP mnuLoop
+
+mnuExit:
+    printStr msgBye
+    MOV AX,4C00h
+    INT 21h
+
+MAIN ENDP
+
+; FEATURE 1: Add New Patient
+
+addPatient PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH DX
+    PUSH SI
+
+    MOV AL,patCount
+    CMP AL,5
+    JGE apFull
+
+takeID:
+
+    printStr msgAddID
+
+    MOV AH,1
+    INT 21h
+
+    MOV searchKey,AL
+
+    MOV CL,patCount
+    MOV CH,0
+    MOV BX,0
+
+checkLoop:
+
+    CMP CX,0
+    JE idOK
+
+    MOV DL,patID[BX]
+    CMP DL,searchKey
+    JE duplicateID
+
+    INC BX
+    DEC CX
+    JMP checkLoop
+
+duplicateID:
+    printStr msgIDTaken
+    newline
+    JMP takeID
+
+idOK:
+
+    MOV BL,patCount
+    MOV BH,0
+
+    MOV AL,searchKey
+    MOV patID[BX],AL
+
+    printStr msgAddGend
+    MOV AH,1
+    INT 21h
+    MOV patGend[BX],AL
+
+    printStr msgAddAge
+    MOV AH,1
+    INT 21h
+    SUB AL,30h
+    MOV patAge[BX],AL
+
+    printStr msgAddName
+
+    MOV AL,patCount
+    MOV AH,0
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,9
+
+nameLoop:
+    MOV AH,1
+    INT 21h
+
+    CMP AL,0Dh
+    JE nameDone
+
+    MOV patName[SI],AL
+    INC SI
+
+    DEC CX
+    JNZ nameLoop
+
+nameDone:
+
+fillName:
+    CMP CX,0
+    JE diseaseInput
+
+    MOV patName[SI],' '
+    INC SI
+    DEC CX
+    JMP fillName
+
+diseaseInput:
+
+    printStr msgAddDisease
+
+    MOV AL,patCount
+    MOV AH,0
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,9
+
+diseaseLoop:
+    MOV AH,1
+    INT 21h
+
+    CMP AL,0Dh
+    JE diseaseDone
+
+    MOV patDisease[SI],AL
+    INC SI
+
+    DEC CX
+    JNZ diseaseLoop
+
+diseaseDone:
+
+fillDisease:
+    CMP CX,0
+    JE addDone
+
+    MOV patDisease[SI],' '
+    INC SI
+    DEC CX
+    JMP fillDisease
+
+addDone:
+
+    INC patCount
+
+    printStr msgAdded
+    newline
+    JMP apExit
+
+apFull:
+    printStr msgFull
+    newline
+
+apExit:
+    POP SI
+    POP DX
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+addPatient ENDP
+
+printPatientName PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+    PUSH DX
+
+    printStr msgNameLabel
+
+    MOV AX,BX
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,9
+
+pnLoop:
+    MOV DL,patName[SI]
+
+    CMP DL,' '
+    JE pnDone
+
+    MOV AH,2
+    INT 21h
+
+    INC SI
+    DEC CX
+    JNZ pnLoop
+
+pnDone:
+    newline
+
+    POP DX
+    POP SI
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+printPatientName ENDP
+
+printPatientDisease PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+    PUSH DX
+
+    printStr msgDiseaseLbl
+
+    MOV AX,BX
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,9
+
+pdLoop:
+    MOV DL,patDisease[SI]
+
+    CMP DL,' '
+    JE pdDone
+
+    MOV AH,2
+    INT 21h
+
+    INC SI
+    DEC CX
+    JNZ pdLoop
+
+pdDone:
+    newline
+
+    POP DX
+    POP SI
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+printPatientDisease ENDP
+
+printSingleRecord PROC NEAR
+
+    PUSH AX
+    PUSH DX
+
+    printStr msgSep
+
+    printStr msgIDLabel
+    MOV DL,patID[BX]
+    MOV AH,2
+    INT 21h
+    newline
+
+    printStr msgAgeLabel
+    MOV DL,patAge[BX]
+    ADD DL,30h
+    MOV AH,2
+    INT 21h
+    newline
+
+    printStr msgGendLabel
+    MOV DL,patGend[BX]
+    MOV AH,2
+    INT 21h
+    newline
+
+    CALL printPatientName
+    CALL printPatientDisease
+
+    POP DX
+    POP AX
+    RET
+
+printSingleRecord ENDP
+
+; FEATURE 2: View All Patients
+
+viewAllPatients PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+
+    MOV CL,patCount
+    MOV CH,0
+
+    CMP CX,0
+    JE noPatients
+
+    MOV BX,0
+
+viewLoop:
+    PUSH CX
+    CALL printSingleRecord
+    POP CX
+
+    INC BX
+    DEC CX
+    JNZ viewLoop
+
+    JMP viewDone
+
+noPatients:
+    printStr msgNoRec
+    newline
+
+viewDone:
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+viewAllPatients ENDP
+
+; FEATURE 3: Search Patient by ID
+
+searchPatient PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+
+    printStr msgSearchID
+
+    MOV AH,1
+    INT 21h
+
+    MOV searchKey,AL
+    newline
+
+    MOV CL,patCount
+    MOV CH,0
+
+    CMP CX,0
+    JE searchNone
+
+    MOV BX,0
+
+searchLoop:
+
+    MOV AL,patID[BX]
+
+    CMP AL,searchKey
+    JE foundPatient
+
+    INC BX
+    DEC CX
+    JNZ searchLoop
+
+    printStr msgNotFound
+    newline
+    JMP searchDone
+
+searchNone:
+    printStr msgNoRec
+    newline
+    JMP searchDone
+
+foundPatient:
+    CALL printSingleRecord
+
+searchDone:
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+searchPatient ENDP
+
+; FEATURE 4: Update Patient Details
+
+updatePatient PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+
+    printStr msgUpdID
+
+    MOV AH,1
+    INT 21h
+
+    MOV searchKey,AL
+    newline
+
+    MOV CL,patCount
+    MOV CH,0
+    MOV BX,0
+
+updateLoop:
+
+    CMP CX,0
+    JE updateFail
+
+    MOV AL,patID[BX]
+
+    CMP AL,searchKey
+    JE updateFound
+
+    INC BX
+    DEC CX
+    JMP updateLoop
+
+updateFail:
+    printStr msgNotFound
+    newline
+    JMP updateEnd
+
+updateFound:
+
+    printStr msgUpdAge
+
+    MOV AH,1
+    INT 21h
+
+    SUB AL,30h
+    MOV patAge[BX],AL
+
+    printStr msgUpdDisease
+
+    MOV AX,BX
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,9
+
+updDiseaseLoop:
+
+    MOV AH,1
+    INT 21h
+
+    CMP AL,0Dh
+    JE updDiseaseDone
+
+    MOV patDisease[SI],AL
+    INC SI
+
+    DEC CX
+    JNZ updDiseaseLoop
+
+updDiseaseDone:
+
+fillUpdDisease:
+
+    CMP CX,0
+    JE updSuccess
+
+    MOV patDisease[SI],' '
+    INC SI
+    DEC CX
+    JMP fillUpdDisease
+
+updSuccess:
+
+    newline
+    printStr msgUpdDone
+    newline
+
+updateEnd:
+    POP SI
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+updatePatient ENDP
+
+; FEATURE 5: Delete Patient Record
+
+deletePatient PROC NEAR
+
+    PUSH AX
+    PUSH BX
+    PUSH CX
+    PUSH SI
+
+    printStr msgDelID
+
+    MOV AH,1
+    INT 21h
+
+    MOV searchKey,AL
+    newline
+
+    MOV CL,patCount
+    MOV CH,0
+
+    CMP CX,0
+    JE delFail
+
+    MOV SI,0
+
+findDelete:
+
+    MOV AL,patID[SI]
+
+    CMP AL,searchKey
+    JE deleteNow
+
+    INC SI
+    DEC CX
+    JNZ findDelete
+
+delFail:
+    printStr msgNotFound
+    newline
+    JMP delDone
+
+deleteNow:
+
+    MOV BX,SI
+
+shiftLoop:
+
+    MOV AL,patCount
+    DEC AL
+
+    CMP BL,AL
+    JGE shiftDone
+
+    MOV AL,patID[BX+1]
+    MOV patID[BX],AL
+
+    MOV AL,patAge[BX+1]
+    MOV patAge[BX],AL
+
+    MOV AL,patGend[BX+1]
+    MOV patGend[BX],AL
+
+    PUSH BX
+
+    MOV AX,BX
+    MOV CX,10
+    MUL CX
+    MOV SI,AX
+
+    MOV CX,10
+
+nameShiftLoop:
+
+    MOV AL,patName[SI+10]
+    MOV patName[SI],AL
+
+    MOV AL,patDisease[SI+10]
+    MOV patDisease[SI],AL
+
+    INC SI
+    LOOP nameShiftLoop
+
+    POP BX
+
+    INC BX
+    JMP shiftLoop
+
+shiftDone:
+
+    DEC patCount
+
+    printStr msgDeleted
+    newline
+
+delDone:
+    POP SI
+    POP CX
+    POP BX
+    POP AX
+    RET
+
+deletePatient ENDP
+
+; FEATURE 6: Emergency Stack
+
+emergencyMenu PROC NEAR
+
+    PUSH AX
+
+emLoop:
+
+    printStr msgEmgMenu
+
+    MOV AH,1
+    INT 21h
+
+    newline
+
+    CMP AL,'1'
+    JE emPush
+
+    CMP AL,'2'
+    JE emPop
+
+    CMP AL,'3'
+    JE emBack
+
+    printStr msgInvalid
+    JMP emLoop
+
+emPush:
+    CALL pushEmergency
+    JMP emLoop
+
+emPop:
+    CALL popEmergency
+    JMP emLoop
+
+emBack:
+    POP AX
+    RET
+
+emergencyMenu ENDP
+
+pushEmergency PROC NEAR
+
+    PUSH AX
+    PUSH BX
+
+    MOV AL,emgTop
+    CMP AL,5
+    JGE emgFullCase
+
+    printStr msgEmgID
+
+    MOV AH,1
+    INT 21h
+
+    MOV BL,emgTop
+    MOV BH,0
+
+    MOV emergStack[BX],AL
+
+    INC emgTop
+
+    MOV DL,AL
+    MOV AH,2
+    INT 21h
+
+    printStr msgEmgPushed
+    newline
+
+    JMP pushDone
+
+emgFullCase:
+    printStr msgEmgFull
+    newline
+
+pushDone:
+    POP BX
+    POP AX
+    RET
+
+pushEmergency ENDP
+
+popEmergency PROC NEAR
+
+    PUSH AX
+    PUSH BX
+
+    MOV AL,emgTop
+
+    CMP AL,0
+    JE emptyCase
+
+    DEC emgTop
+
+    MOV BL,emgTop
+    MOV BH,0
+
+    printStr msgTreating
+
+    MOV DL,emergStack[BX]
+
+    MOV AH,2
+    INT 21h
+
+    newline
+    JMP popDone
+
+emptyCase:
+    printStr msgEmgEmpty
+    newline
+
+popDone:
+    POP BX
+    POP AX
+    RET
+
+popEmergency ENDP
+
+END MAIN
+ret
